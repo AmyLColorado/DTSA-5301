@@ -1,0 +1,229 @@
+---
+title: "COVID Analysis"
+output: html_document
+date: "March 4, 2024"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Introduction
+
+In this analysis, we explore COVID trends in the US. We use NY Times data as avaliable on Github. We will also explore associations between COVID rates and the 2020 presidential election results, as reported from NBC News.
+
+## Step 1: Libraries
+
+* Include necessary libraries.
+
+```{r libraries}
+library(tidyverse)
+library(usmap)
+library(rvest)
+```
+
+* Step 2: Import Data
+
+```{r import}
+covid_site = 'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/'
+
+confirmed_url='time_series_covid19_confirmed_US.csv'
+deaths_url = 'time_series_covid19_deaths_US.csv'
+
+cases_0 = read.csv(paste0(covid_site,confirmed_url))
+deaths_0 = read.csv(paste0(covid_site,deaths_url))
+
+election_url = 
+  'https://www.nbcnews.com/politics/2020-elections/president-results/'
+
+tables = html_nodes(read_html(election_url), "table")
+table_1 = html_table(tables[1][[1]], fill = TRUE)
+
+election_results = table_1 %>% 
+  separate(Candidates, into =
+             c('Candidate_1', 'Biden','Candidate_2','Trump'),
+             sep = " ") %>%
+  mutate(across(c(5,7), ~ as.numeric(gsub("%","",.)))) %>%
+  select(1,5,7)
+```
+## Step 3: Transform Data
+
+* Transform COVID data to track confirmed cases and deaths over time and as of the last date available.
+* Compute state-level rates for cases and deaths.
+
+```{r Step 3}
+
+cases = cases_0 %>% 
+  pivot_longer(cols= -(UID:Combined_Key),
+               names_to = "Date",
+               values_to = "Cases") %>%
+  mutate(Date = mdy(gsub("X","",Date)))
+
+deaths = deaths_0 %>% 
+  pivot_longer(cols= -(UID:Population),
+          names_to = "Date",
+          values_to = "Deaths") %>%
+  mutate(Date = mdy(gsub("X","",Date)))
+
+max_date = format(max(deaths$Date), "%B %d, %Y")
+
+state_pops = deaths %>%
+  filter(Date==max(Date)) %>%
+  group_by(Province_State) %>%
+  summarise(Population = sum(Population))
+
+stats_by_state_date = 
+  cases %>% 
+  right_join(deaths %>% 
+      select(Combined_Key,Date,Deaths),
+      by = c("Combined_Key","Date")) %>% 
+  group_by(Province_State,Date) %>%
+  summarise(Cases=sum(Cases),
+            Deaths=sum(Deaths)) %>%
+  mutate(New_cases = Cases - lag(Cases),
+         New_deaths = Deaths-lag(Deaths)) %>%
+  left_join(state_pops, by=c("Province_State" = "Province_State")) %>%
+  mutate(Death_rate_by_hund_thou = Deaths/Population*100000,
+         Case_rate_by_mill = Cases/Population*1000000)
+
+stats_by_state = 
+  stats_by_state_date %>%
+  filter(Date == max(Date)) 
+
+stats_by_month = 
+  stats_by_state_date%>% 
+  mutate(Month_Yr = format_ISO8601(Date, precision = "ym")) %>%
+  group_by(Month_Yr) %>%
+  summarise(New_deaths=sum(New_deaths),
+            New_cases=sum(New_cases))
+
+
+```
+## Step 4: Visualize COVID Data
+
+```{r Step 4}
+
+p1 = stats_by_month %>% 
+  filter(!is.na(New_cases)) %>%
+  ggplot(aes(x=Month_Yr,y=New_cases,group=1))+
+  geom_line()+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle = 90,size = 8,hjust = 1))+
+  xlab("Month and Year") +
+  ylab("Confirmed Cases")+
+  ggtitle("New Confirmed COVID Cases in the U.S., by Year and Month")
+
+print(p1)
+
+p2 = stats_by_month %>% 
+  filter(!is.na(New_deaths)) %>%
+  ggplot(aes(x=Month_Yr,y=New_deaths,group=1))+
+  geom_line()+
+  theme_bw()+
+  theme(axis.text.x=element_text(angle = 90,size = 8,hjust = 1))+
+  xlab("Month and Year") +
+  ylab("Deaths")+
+  ggtitle("New COVID Deaths in the U.S., by Year and Month")
+
+print(p2)
+
+p3 = plot_usmap(data=stats_by_state %>% 
+             mutate(state = Province_State),
+           values = "Case_rate_by_mill") +
+  scale_fill_gradient("Case Rate (per million)",
+                      low="#56B1F7", high="#132B43")+
+  theme(legend.position = "right")+
+  ggtitle(paste("Rate of Confirmed Cases as of",max_date))
+
+print(p3)
+
+p4 = plot_usmap(data=stats_by_state %>% 
+           mutate(state = Province_State),
+           values = "Death_rate_by_hund_thou") +
+  scale_fill_gradient("Death Rate (per hundred thousand)",
+                      low="#56B1F7", high="#132B43")+
+  theme(legend.position = "right")+
+  ggtitle(paste("COVID Death Rates as of",max_date))
+
+print(p4)
+```
+
+## Step 5: Conduct Analysis of COVID Deaths as a function of 2020 presidential election results. 
+
+My hypothesis is that there is some correlation between a state's rates of COVID cases and deaths and the political situation of the state. I decided to use the percentage of the state which voted for Candidate Trump as an (albeit imperfect) indicator of that.
+
+```{r Step 5}
+
+stats_by_state_w_election = 
+  stats_by_state %>%
+  right_join(election_results,by= c("Province_State" = "State Name")) 
+
+model_1 = lm(Case_rate_by_mill ~ Trump, 
+             stats_by_state_w_election)
+
+model_2 = lm(Death_rate_by_hund_thou ~ Trump, 
+             stats_by_state_w_election)
+
+## Results of modeling Case_rate_by_mill  by Trump
+
+summary(model_1)
+exp(coef(model_1))
+
+## Results of modeling Death_rate_by_hund_thous  by Trump
+
+summary(model_2)
+exp(coef(model_2))
+
+stats_by_state_w_election %>% 
+  ggplot(aes(y = Case_rate_by_mill,x=Trump)) +
+  geom_point() +
+  stat_smooth(method = "lm", 
+              formula = y ~ x, 
+              geom = "smooth") +
+  xlab("Percentage Voted for Candidate Trump")+
+  ylab("Rate of Confirmed Cases by Hundred Thousand")+
+  ggtitle(paste0("State-Level COVID Case Rates and Voting for Candidate Trump \n(as of ",max_date,")"))
+
+stats_by_state_w_election %>% 
+  ggplot(aes(y = Death_rate_by_hund_thou,x=Trump)) +
+  geom_point() +
+  stat_smooth(method = "lm", 
+              formula = y ~ x, 
+              geom = "smooth") +
+  xlab("Percentage Voted for Candidate Trump")+
+  ylab("Rate of Deaths by Million People")+
+  ggtitle(paste0("State-Level COVID Death Rates and Voting for Candidate Trump \n(as of ",max_date,")"))
+
+```
+
+## Step 6: Summary
+
+The first two graphs show new cases and deaths by month in the U.S. Interestingly, there is a high peak in early 2022, during "Omicron." Thethe highest number of deaths occured in 2020 and early 2021, which concided when immunity was lowest (both naturally and due to vaccinations.)
+
+The two maps show that both rates varied by state.
+
+I hypothesized that there is some association between a state's case and death rates and the percentage of its voters who voted for Candidate Trump in the 2020 U.S. Presidential Election. The models do confirm a significant, positive linear relationship between them, for both rates. Unsurprisingly, the relationship is fairly weak, as there must be several other explanatory factors involved.
+
+A responsible data scientist should think about potential bias in the data and in himself/herself that might affect the analysis. Some potential sources of bias:
+
+1) The case data represents confirmed cases only. It doesn't include cases not tested or reported. There are several reasons a case might not be included, including unavailability of tests, a person's choice not to be tested, or the use of in-home testing.
+
+2) What constitutes a COVID death is complicated and likely varies by the discretion of a provider. For instance, if someone dies in a horrific car accident, while they were positive for COVID, does that count? What if they were asymptomatic? What if they had a high fever that caused them to drive impaired.
+
+3) My own t biases could have led me to want to me to choose to model hat I did! (Or it could have been just an accessible covariate to explore.) Due to this potential bias, it's important for me to note the relatively weak association. If I had more time and opportunity, it would be good for me to explore more independent variables.
+
+### Session Information
+
+```{r session}
+sessionInfo()
+
+
+
+
+
+
+
+
+
+
+
+
