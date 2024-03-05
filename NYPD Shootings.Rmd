@@ -1,0 +1,268 @@
+---
+title: "NYPD Shootings - Historical"
+date: March 2024
+output: html_document
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+# Introduction
+
+In this analysis, we explore shooting incidents that occurred in NYC from 2006 onward. The data are  
+provided from the city of New York.
+
+# Step 1
+
+* Load required libraries.
+* Download NYPD dataset and store it as nypd.
+
+```{r step1, message=FALSE }
+
+library(tidyverse)
+library(scales)
+library(fastDummies)
+
+nypd_url = 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD'
+
+nypd = read.csv(nypd_url)
+
+```
+
+# Step 2
+* Show a summary of the dataset.
+* Convert applicable variables to time, date, or factor.
+* Remove unneeded variables.
+* Examine missing values and determine how to handle them.
+<br>
+
+```{r step2a}
+
+summary(nypd)
+
+```
+I'd like to analyze which shootings are classified as murder and how that might be associated with the victim's sex and race and the perpetrator's sex and age.
+
+``` {r step2b}
+
+nypd_1 = nypd %>% 
+         select(VIC_SEX,VIC_RACE,PERP_SEX,PERP_RACE,
+                STATISTICAL_MURDER_FLAG) %>%
+         mutate(across(everything(), factor))
+
+summary(nypd_1)
+```
+
+
+Missing Values: PERP_SEX and PERP_RACE have a high proportion of nulls, unknown, or blanks. There is no obvious way to impute them, so I'll recode them to missing. They will be included in the descriptive analyses but drop out of the models.
+
+```{r step2c}
+
+nypd_2 =  nypd_1 %>%
+  mutate(PERP_SEX = factor(case_when(PERP_SEX %in% c("(null)","","U") ~                                    NA,.default=PERP_SEX))) %>%
+  mutate(PERP_RACE = factor(case_when(PERP_RACE %in% c("(null)","","UNKNOWN") ~ NA                                     ,.default=PERP_RACE)))
+
+summary(nypd_2)
+
+```
+
+# Step 3
+
+* Create visualizations and conduct analysis.
+
+# Descriptive statistics
+
+``` {r step3-descriptives_1}
+
+for (x in c('STATISTICAL_MURDER_FLAG',
+            'PERP_SEX','PERP_RACE','VIC_SEX',
+            'VIC_RACE')){
+p = nypd_2 %>%
+  count(Value=get(x),name = "Count") %>%
+  ggplot() +
+  
+  geom_col(aes(Count,Value),fill='lightblue') +
+  ylab(x)+
+  theme_bw()
+
+print(p)
+} 
+
+
+q1 = nypd_2 %>% 
+  group_by(VIC_RACE) %>%
+  filter(n()>100 & !is.na(PERP_RACE)) %>%
+  count(VIC_RACE, PERP_RACE) %>%
+  mutate(Percentage = prop.table(n) * 100) %>%
+  ggplot(aes(x=VIC_RACE, y=Percentage, fill=PERP_RACE)) +
+  geom_bar(stat="identity") +
+  ylab("Percentage") +
+  xlab("Victim's Race")+
+  labs(fill="Perpetrator's Race") +
+  scale_x_discrete(label=label_wrap(10))+
+  geom_text(aes(label=paste0(sprintf("%1.1f", Percentage),"%")),
+            position=position_stack(vjust=0.5),size=3) +
+  ggtitle("Perpetrator Race by Victim Race: Known Perpetrator") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle = 90,size = 7, hjust = .5))
+        
+print(q1)
+
+q2 = nypd_2 %>% 
+  group_by(PERP_RACE) %>%
+  filter(n()>100) %>%
+  count(VIC_RACE, PERP_RACE) %>%  
+  mutate(Percentage = prop.table(n) * 100) %>%
+  ggplot(aes(fill = VIC_RACE, y=Percentage, x=PERP_RACE)) +
+  geom_bar(stat="identity") +
+  ylab("Percentage") +
+  labs(fill="Victim's Race")+
+  xlab("Perpetrator's Race") +
+  scale_x_discrete(label=label_wrap(10))+
+  geom_text(aes(label=paste0(sprintf("%1.1f", Percentage),"%")),
+            position=position_stack(vjust=0.5),size=3) +
+  ggtitle("Victim Race by Perpetrator Race") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle = 90,size = 7, hjust = .5))
+
+print(q2)
+
+```
+<br>
+<br>
+<br>
+Conclusion: The graphs show most victims were black, with perpetrators who were black or of an unknown race. I want to look more about the interaction between races and which shootings were classified as murder.
+
+```{r Step 3-descriptives_2}
+
+g = nypd_2 %>%
+  group_by(VIC_SEX) %>%
+  summarise(PctMurdered = sum(STATISTICAL_MURDER_FLAG == "true")/n()*100) %>%
+  ggplot() +
+  
+  geom_bar(aes(x=VIC_SEX,y=PctMurdered),
+           fill="darkblue",stat="identity") +
+  theme_bw()+
+  ggtitle('Murder Status By Victim Sex')
+
+print(g)
+
+g = nypd_2 %>%
+  group_by(VIC_RACE) %>%
+  summarise(PctMurdered= sum(STATISTICAL_MURDER_FLAG == "true")/n()*100) %>%
+  ggplot() +
+  scale_x_discrete(label=label_wrap(10))+
+  geom_bar(aes(x=VIC_RACE,y=PctMurdered),
+           fill="darkblue",stat="identity") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle = 0,size = 7,hjust = 0)) +
+  ggtitle('Murder Status By Victim Race')
+
+print(g)
+
+g = nypd_2 %>%
+  group_by(PERP_SEX) %>%
+  summarise(PctMurdered = sum(STATISTICAL_MURDER_FLAG == "true")/n()*100) %>%
+  ggplot() +
+  geom_bar(aes(x=PERP_SEX,y=PctMurdered),
+           fill="darkblue",stat="identity") +
+  theme_bw()+
+  ggtitle('Murder Status By Perpetrator Sex')
+
+print(g)
+
+g = nypd_2%>%
+  group_by(PERP_RACE) %>%
+  summarise(PctMurdered= sum(STATISTICAL_MURDER_FLAG == "true")/n()*100) %>%
+  ggplot() +
+  scale_x_discrete(label=label_wrap(10))+
+  geom_bar(aes(x=PERP_RACE,y=PctMurdered),
+           fill="darkblue",stat="identity") +
+  theme_bw() +
+  theme(axis.text.x=element_text(angle = 0,size = 7,hjust = 0)) +
+  ggtitle('Murder Status By Perpetrator Race')
+
+print(g)
+
+```
+<br>
+<br> 
+
+## Inferential statistics
+
+* Use the fastDummies package to create dummy variables.
+
+```{r step 3a}
+
+nypd_3 =  nypd_2 %>%
+  fastDummies::dummy_cols(select_column=c('STATISTICAL_MURDER_FLAG','VIC_RACE',"VIC_SEX","PERP_RACE","PERP_SEX"))
+names(nypd_3)
+```
+
+* Run model of STATISTICAL_MURDER_FLAG as a fuction of 
+VICTIM_RACE and VICTIM_SEX.
+
+``` {r step 3b}
+
+
+g1 = glm(STATISTICAL_MURDER_FLAG_true ~ 
+            VIC_RACE_WHITE + VIC_SEX_F ,
+         family=binomial(link='logit'),nypd_3 %>%
+           filter(PERP_RACE_NA == 0 | PERP_SEX_NA == 0)
+         )
+summary(g1)
+exp(coef(g1))
+
+```
+
+Controlling for gender, shootings for which the victims are white are nearly 50% more likely to be classified as murder as for victims that are not white.
+
+Controlling for race, shootings for which the victims are female are 17% more likely to be classified as murder as for victims that are male.
+
+
+* Run model of STATISTICAL_MURDER_FLAG as a fuction of 
+PERP_RACE and PERP_SEX. Use black and male as reference categories since they are the highest frequencies. Drop cases where PERP_RACE is missing or PERP_SEX is missing.
+
+``` {r step 3c}
+g2 = glm(STATISTICAL_MURDER_FLAG_true ~ 
+           PERP_RACE_WHITE + PERP_SEX_F ,
+         family=binomial(link='logit'),nypd_3 %>%
+           filter(PERP_RACE_NA == 0 | PERP_SEX_NA == 0)
+)
+summary(g2)
+exp(coef(g2))
+
+```
+Controlling for gender, shootings for which the perpetrators are white are over twice as likely to be classified as murder as for perpetrators that are not white.
+
+Controlling for race, shootings for which the perpetrators are female are 30% more likely to be classified as murder as for perpetrators that are male.
+
+
+# Step 4
+
+In this analysis, we explored shooting incidents in NYC. We found that most shootings involved black victims and black perpetrators. Victims and perpetrators were also more likely to be male.
+
+We analyzed the likelihood that the shootings were classified as murder. They were more likely to be so if the victim was white or female or if the perpetrator was white or female.
+
+We need to be aware of the researcher's potential bias and the data's potential bias. I've identified several sources of potential bias in the data to be aware of. 
+
+1.  Many records did not include the race or sex of the perpetrator. This limits the results, as there could be systematic reasons why some crimes don't have a known perpetrator,
+
+2. There isn't a way to know which fatal shootings are appropriately classified as murder or not. There may be pressure on law enforcement or prosecutors to charge that one way or another based on the circumstances or the individuals involved.
+
+# Notes
+
+* I used Internet resources including Stackoverflow.com and bookdown.com to assist in producing this R code.
+
+* My sessionInfo is as follows:
+
+``` {r info}
+sessionInfo()
+```
+
+
+  
+
+
